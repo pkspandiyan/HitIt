@@ -1,4 +1,4 @@
-// Web Access Log - Analyzer
+// HitIt - Web Access Log - Analyzer & Simulator
 
 // This implementation requires below NPMs
 // npm install event-stream
@@ -11,17 +11,24 @@ url = require('url');
 
 var phantom = require('phantom');
 
-function hitIt(hitThisURL) {
+var phantomCallCount = 0;
+var hitItResults = [];
+
+function hitIt(hitThisURL, callMeToContinue) {
     phantom.create('--ignore-ssl-errors=true', function (ph) {
       ph.createPage(function (page) {
           var time = Date.now();
+          page.set('settings.userAgent', "HitIt 0.1 (Developed by Kalyana Pandian)");
           page.open(hitThisURL, function (status) {
-            //console.log("Opened "+hitThisURL+" ? ", status);
-            fs.appendFile('hititresults.txt', status+","+(Date.now()-time)+","+hitThisURL+"\n");
-            page.evaluate(function () { return document.title; }, function (result) {
-                //console.log('Page title is ' + result);
-                ph.exit();
-            });
+              hitItResults.push(status+","+(Date.now()-time)+","+hitThisURL);
+              ph.exit();
+              callMeToContinue();
+                /*
+                page.evaluate(function () { return document.title; }, function (result) {
+                    //console.log('Page title is ' + result);
+                    ph.exit();
+                });
+                */
           });
       });
     }, {
@@ -30,6 +37,7 @@ function hitIt(hitThisURL) {
       }
     });
 }
+
 
 // Folder & File path tested only with absolute path. Relative path may work!
 var logFolderPath = "C:/Users/kalypand/eBT/eBP/hititlogs"; //To analyze all the files with in the given folder. No trailing slash.
@@ -40,6 +48,7 @@ var logFilePath = ""; //To analyze just one file; if this value is present logFo
 var fileExtensionsToIgnore = ['gz', 'tar']; //This applies only to files within logFolderPath
 var urlsToIgnore = ['/'];
 var urlExtensionsToSimulate = ['.html', '.pdf'];
+var simulateRequestMethods = ['GET', 'HEAD']
 
 if(logFilePath) {
     readWebAccessLog(logFilePath);
@@ -51,16 +60,38 @@ var webAccessLogArr = [];
 var allDomainDataObj = {};
 
 function simulateAccessLog() {
+    var arrayStream = eventStream.readArray(webAccessLogArr)
+    .pipe(eventStream.mapSync(function(logFieldsArr) {
+        arrayStream.pause();
+        try {
+            simulateThisLog(logFieldsArr, function() { arrayStream.resume(); });
+        } catch(err) {
+            console.log("----");
+            console.log("[WARN] Simulation failed for log line array "+logFieldsArr);
+            console.log("[ERRO] "+err);
+            console.log("----");
+            arrayStream.resume();
+        }
+    }))
+    .on('error', function() {} )
+    .on('end', function() {
+        fs.writeFile('hititresults.txt', JSON.stringify(hitItResults), function(err) {
+            if(err) console.log(err);
+            else console.log("Stored HitIt results to hititresults.txt");
+        });
+    });
+}
+
+function simulateThisLog(logFieldsArr, callMeToContinue) {
     var incr = 0;
-    var urlExt = /^(\w+:\/\/[\w\._~:/?#\[\]@!$&'()*+,;=%]*|[^\.]+\.[^\.]+)$/;
-    for(i in webAccessLogArr) {
-        var logFieldsArr = webAccessLogArr[i];
+    //for(i in webAccessLogArr) {
+        //var logFieldsArr = webAccessLogArr[i];
         //console.log("--------------------");
         //console.log(logFieldsArr);
         //console.log("--------------------");
         try {
             var request = logFieldsArr[3].split(" ");
-            if(urlsToIgnore.indexOf(request[1]) < 0 && request[0] === 'GET') {
+            if(urlsToIgnore.indexOf(request[1]) < 0 && simulateRequestMethods.indexOf(request[0]) > -1) {
                 var urlToHit = "http://"+logFieldsArr[9]+request[1];
                 var urlPath = url.parse(urlToHit).pathname;
                 var hitTheUrl = false;
@@ -72,20 +103,20 @@ function simulateAccessLog() {
                     }
                 }
                 if(hitTheUrl) {
-                    hitIt(urlToHit);
-                    incr++;
-                    if(incr===5) {
-                        console.log("Exit!!!");
-                        return;
-                    }
+                    hitIt(urlToHit, callMeToContinue);
+                    phantomCallCount++;
+                } else {
+                    callMeToContinue();
                 }
             } else {
+                callMeToContinue();
                 console.log('Skipped URL '+request[1]+' with method '+request[0]);
             }
         } catch(err) {
             console.log("[ERRO] @ log line # "+i+". "+err);
+            callMeToContinue();
         }
-    }
+    //}
 }
 
 function processAllDomainObj() {
@@ -174,22 +205,6 @@ function processLogFields(requiredLogFieldsArr, callItWhenYouAreDone) {
     dataArr.push(requiredLogFieldsArr[10]);
     dateWiseDetails.push(dataArr);
     callItWhenYouAreDone();
-
-/*
-    // Request Date
-    var dateWiseDetails = urlDataObj[requiredLogFieldsArr[1]];
-    if(!dateWiseDetails) {
-        dateWiseDetails = {};
-        urlDataObj[requiredLogFieldsArr[1]] = dateWiseDetails;
-    }
-
-    // Request Method
-    var requestTypeDataArr = dateWiseDetails[requestArr[0]];
-    if(!requestTypeDataArr) {
-        requestTypeDataArr = [];
-        dateWiseDetails[requestArr[0]] = requestTypeDataArr;
-    }
-*/
 }
 
 
@@ -222,7 +237,7 @@ function readWebAccessLog(webAccessLogFilePath) {
     console.log("[INFO] Processing file "+webAccessLogFilePath);
     var lineNr = 1;
 
-    fileStream = fs.createReadStream(webAccessLogFilePath)
+    var fileStream = fs.createReadStream(webAccessLogFilePath, {autoClose: true})
         .pipe(eventStream.split())
         .pipe(eventStream.mapSync(function(line) {
             // pause the readstream
@@ -280,17 +295,3 @@ function readWebAccessLogFolder(webAccessLogFolderPath) {
         }
     });
 }
-
-//var logStr = '10.92.146.126 - - [31/Dec/2014:14:54:50 -0500] "\x03" 501 203 "-" "-" "-" test.aig.com 0';
-var logStr = '10.32.14.122 - - [02/Jan/2015:12:32:08 -0500] "GET /valic/internet/us/en/valic_footer_content_bg_tcm3240-428490.gif HTTP/1.1" 200 2464 "https://www.valic.com/overview_3240_422600.html" "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0)" "-" www.aig.com 0';
-//var regEx = new RegExp("(.*) \- \- \[(.*)\] \"(.*) (.*)\?(.*) HTTP\/(.*)\" ([0-9]*) ([0-9]*) \"(.*)\" \"(.*)\" \"(.*)\"");
-//var regEx = new RegExp("/(\d*.\d*.\d*.\d*)\s(.)\s(.)\s.([0-9]*.[A-z]*.[0-9]*).([0-9]*.[0-9]*.[0-9]*)\s(.[0-9]*).\s/g");
-
-//var logFields = logStr.match("/(\d*.\d*.\d*.\d*)\s(.)\s(.)\s.([0-9]*.[A-z]*.[0-9]*).([0-9]*.[0-9]*.[0-9]*)\s(.[0-9]*).\s/");
-var logFields = /(\d*.\d*.\d*.\d*)\s(.)\s(.)\s.([0-9]*.[A-z]*.[0-9]*).([0-9]*.[0-9]*.[0-9]*)\s(.[0-9]*).\s\"(.*)\"\s([0-9]*)\s([0-9]*)\s\"(.*)\"\s\"(.*)\"\s\"(.*)\"\s(.*)\s(\d*)/.exec(logStr);
-
-// (\d*.\d*.\d*.\d*)\s(.)\s(.)\s.([0-9]*.[A-z]*.[0-9]*).([0-9]*.[0-9]*.[0-9]*)\s(.[0-9]*).\s
-
-//for (var i in logFields) {
-//    console.log(logFields[i]+"\n");
-//}
