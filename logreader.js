@@ -1,15 +1,38 @@
-// HitIt - Web Access Log - Analyzer & Simulator
+// ******************************************* //
+// HitIt 0.1 (Developed by Kalyana Pandian)
+// Web Access Log - Analyzer & Simulator
+// ******************************************* //
 
 // This implementation requires below NPMs
 // npm install event-stream
 // npm install phantom [Please ensure phontomjs executable in system path]
 
-fs = require('fs')
-stream = require('stream');
-eventStream = require("event-stream");
-url = require('url');
+//#####################
+// Folder & File path tested only with absolute path. Relative path may work!
+var logFolderPath = "C:/Users/kalypand/eBT/eBP/hititlogs"; //To analyze all the files with in the given folder. No trailing slash.
+var logFilePath = ""; //To analyze just one file; if this value is present logFolderPath is ignored
+//#####################
 
+//#####################
+// Leave it empty to simulate all domains with in access logs
+var domainsToSimulate = ['www.aig.com', 'www.valic.com'];
+//#####################
+
+/////////////////////// DO NOT MODIFY ANYTHING BELOW /////////////////////////////
+
+var fs = require('fs')
+var stream = require('stream');
+var eventStream = require("event-stream");
+var url = require('url');
 var phantom = require('phantom');
+
+var generatePerformanceReport = false;
+var generateLoadFromAccessLog = true;
+
+var urlsToIgnore = ['/'];
+var fileExtensionsToIgnore = ['gz', 'tar']; //This applies only to files within logFolderPath
+var urlExtensionsToSimulate = ['.html', '.pdf'];
+var simulateRequestMethods = ['GET', 'HEAD'];
 
 var phantomCallCount = 0;
 var hitItResults = [];
@@ -18,18 +41,23 @@ function hitIt(hitThisURL, callMeToContinue) {
     phantom.create('--ignore-ssl-errors=true', function (ph) {
       ph.createPage(function (page) {
           var time = Date.now();
-          page.set('settings.userAgent', "HitIt 0.1 (Developed by Kalyana Pandian)");
-          page.open(hitThisURL, function (status) {
-              hitItResults.push(status+","+(Date.now()-time)+","+hitThisURL);
-              ph.exit();
+          try {
+              page.set('settings.userAgent', "HitIt 0.1 (Developed by Kalyana Pandian)");
+              page.open(hitThisURL, function (status) {
+                  hitItResults.push(status+","+(Date.now()-time)+","+hitThisURL);
+                  ph.exit();
+                  callMeToContinue();
+                    /*
+                    page.evaluate(function () { return document.title; }, function (result) {
+                        //console.log('Page title is ' + result);
+                        ph.exit();
+                    });
+                    */
+              });
+          } catch(err) {
+              hitItResults.push("[ERRO] "+err+","+(Date.now()-time)+","+hitThisURL);
               callMeToContinue();
-                /*
-                page.evaluate(function () { return document.title; }, function (result) {
-                    //console.log('Page title is ' + result);
-                    ph.exit();
-                });
-                */
-          });
+          }
       });
     }, {
         dnodeOpts: {
@@ -37,18 +65,6 @@ function hitIt(hitThisURL, callMeToContinue) {
       }
     });
 }
-
-
-// Folder & File path tested only with absolute path. Relative path may work!
-var logFolderPath = "C:/Users/kalypand/eBT/eBP/hititlogs"; //To analyze all the files with in the given folder. No trailing slash.
-
-//"C:/Users/kalypand/eBT/eBP/Logs/webalizer/ToProcess"
-
-var logFilePath = ""; //To analyze just one file; if this value is present logFolderPath is ignored
-var fileExtensionsToIgnore = ['gz', 'tar']; //This applies only to files within logFolderPath
-var urlsToIgnore = ['/'];
-var urlExtensionsToSimulate = ['.html', '.pdf'];
-var simulateRequestMethods = ['GET', 'HEAD']
 
 if(logFilePath) {
     readWebAccessLog(logFilePath);
@@ -73,7 +89,13 @@ function simulateAccessLog() {
             arrayStream.resume();
         }
     }))
-    .on('error', function() {} )
+    .on('error', function() {
+            console.log("----");
+            console.log("[WARN] Read array failed!");
+            console.log("[ERRO] "+err);
+            console.log("----");
+            arrayStream.resume();
+    })
     .on('end', function() {
         fs.writeFile('hititresults.txt', JSON.stringify(hitItResults), function(err) {
             if(err) console.log(err);
@@ -84,14 +106,10 @@ function simulateAccessLog() {
 
 function simulateThisLog(logFieldsArr, callMeToContinue) {
     var incr = 0;
-    //for(i in webAccessLogArr) {
-        //var logFieldsArr = webAccessLogArr[i];
-        //console.log("--------------------");
-        //console.log(logFieldsArr);
-        //console.log("--------------------");
-        try {
-            var request = logFieldsArr[3].split(" ");
-            if(urlsToIgnore.indexOf(request[1]) < 0 && simulateRequestMethods.indexOf(request[0]) > -1) {
+    try {
+        var request = logFieldsArr[3].split(" ");
+        if(urlsToIgnore.indexOf(request[1]) < 0 && simulateRequestMethods.indexOf(request[0]) > -1) {
+            if(domainsToSimulate.length===0 || domainsToSimulate.indexOf(logFieldsArr[9]) > -1) {
                 var urlToHit = "http://"+logFieldsArr[9]+request[1];
                 var urlPath = url.parse(urlToHit).pathname;
                 var hitTheUrl = false;
@@ -110,13 +128,15 @@ function simulateThisLog(logFieldsArr, callMeToContinue) {
                 }
             } else {
                 callMeToContinue();
-                console.log('Skipped URL '+request[1]+' with method '+request[0]);
             }
-        } catch(err) {
-            console.log("[ERRO] @ log line # "+i+". "+err);
+        } else {
             callMeToContinue();
+            console.log('Skipped URL '+request[1]+' with method '+request[0]);
         }
-    //}
+    } catch(err) {
+        console.log("[ERRO] @ log line # "+i+". "+err);
+        callMeToContinue();
+    }
 }
 
 function processAllDomainObj() {
@@ -150,7 +170,10 @@ function fetchWebAccessLogFields(logLineNr, logFieldsArr, callItWhenYouAreDone) 
         }
     }
     webAccessLogArr.push(requiredLogFieldsArr);
-    processLogFields(requiredLogFieldsArr, callItWhenYouAreDone);
+    if(generatePerformanceReport)
+        processLogFields(requiredLogFieldsArr, callItWhenYouAreDone);
+    else
+        callItWhenYouAreDone();
 }
 
 function processLogFields(requiredLogFieldsArr, callItWhenYouAreDone) {
@@ -260,12 +283,15 @@ function readWebAccessLog(webAccessLogFilePath) {
             console.log('Error while reading file.');
         })
         .on('end', function(){
-            fs.writeFile('accessit.txt', JSON.stringify(allDomainDataObj), function(err) {
-                if(err) console.log(err);
-                else console.log("Stored processed data to file accessit.txt");
-            });
+            if(generatePerformanceReport) {
+                fs.writeFile('accessit.txt', JSON.stringify(allDomainDataObj), function(err) {
+                    if(err) console.log(err);
+                    else console.log("Stored processed data to file accessit.txt");
+                });
+            }
             console.log('Read entirefile.')
-            simulateAccessLog();
+            if(generateLoadFromAccessLog)
+                simulateAccessLog();
         })
     );
 }
