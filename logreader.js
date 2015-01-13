@@ -9,28 +9,32 @@
 
 //#####################
 // Folder & File path tested only with absolute path. Relative path may work!
-var logFolderPath = "C:/Users/kalypand/eBT/eBP/hititlogs"; //To analyze all the files with in the given folder. No trailing slash.
+// On windows machine use unix style (/) folder separator
+var logFolderPath = "C:/Users/kalypand/eBT/eBP/Logs/webalizer/ToProcess/JustADay"; //"C:/Users/kalypand/eBT/eBP/hititlogs"; //To analyze all the files with in the given folder. No trailing slash.
 var logFilePath = ""; //To analyze just one file; if this value is present logFolderPath is ignored
 //#####################
 
 //#####################
 // Leave it empty to simulate all domains with in access logs
-var domainsToSimulate = ['www.aig.com', 'www.valic.com'];
+var domainsToProcess = ['www.aig.com'];
 //#####################
 
 /////////////////////// DO NOT MODIFY ANYTHING BELOW /////////////////////////////
 
 var fs = require('fs')
-var stream = require('stream');
-var eventStream = require("event-stream");
+//var stream = require('stream');
+var phantom = require('phantom'); // Headless web browser
+var eventStream = require("event-stream"); // Event stream to read large files without impacting system memory
 var url = require('url');
-var phantom = require('phantom');
+var async = require('async'); // For concurrency
 
-var generatePerformanceReport = false;
-var generateLoadFromAccessLog = true;
+var generatePerformanceReport = true;
+var generateAbstractPerformanceReport = true;
+
+var generateLoadFromAccessLog = false;
 
 var urlsToIgnore = ['/'];
-var fileExtensionsToIgnore = ['gz', 'tar']; //This applies only to files within logFolderPath
+var fileExtensionsToIgnore = ['gz', 'tar', 'txt', 'csv']; //This applies only to files within logFolderPath
 var urlExtensionsToSimulate = ['.html', '.pdf'];
 var simulateRequestMethods = ['GET', 'HEAD'];
 
@@ -74,6 +78,7 @@ if(logFilePath) {
 
 var webAccessLogArr = [];
 var allDomainDataObj = {};
+var allDomainAbstractDataObj = {};
 
 function simulateAccessLog() {
     var arrayStream = eventStream.readArray(webAccessLogArr)
@@ -99,7 +104,7 @@ function simulateAccessLog() {
     .on('end', function() {
         fs.writeFile('hititresults.txt', JSON.stringify(hitItResults), function(err) {
             if(err) console.log(err);
-            else console.log("Stored HitIt results to hititresults.txt");
+            else console.log("[INFO] Stored HitIt results to hititresults.txt");
         });
     });
 }
@@ -109,7 +114,7 @@ function simulateThisLog(logFieldsArr, callMeToContinue) {
     try {
         var request = logFieldsArr[3].split(" ");
         if(urlsToIgnore.indexOf(request[1]) < 0 && simulateRequestMethods.indexOf(request[0]) > -1) {
-            if(domainsToSimulate.length===0 || domainsToSimulate.indexOf(logFieldsArr[9]) > -1) {
+            if(domainsToProcess.length===0 || domainsToProcess.indexOf(logFieldsArr[9]) > -1) {
                 var urlToHit = "http://"+logFieldsArr[9]+request[1];
                 var urlPath = url.parse(urlToHit).pathname;
                 var hitTheUrl = false;
@@ -170,9 +175,17 @@ function fetchWebAccessLogFields(logLineNr, logFieldsArr, callItWhenYouAreDone) 
         }
     }
     webAccessLogArr.push(requiredLogFieldsArr);
-    if(generatePerformanceReport)
-        processLogFields(requiredLogFieldsArr, callItWhenYouAreDone);
-    else
+    if(generatePerformanceReport) {
+        if(domainsToProcess.indexOf(requiredLogFieldsArr[9]) < 0) {
+            callItWhenYouAreDone();
+            return;
+        }
+
+        if(generateAbstractPerformanceReport)
+            abstractDomainData(requiredLogFieldsArr, callItWhenYouAreDone);
+        else
+            processLogFields(requiredLogFieldsArr, callItWhenYouAreDone);
+    } else
         callItWhenYouAreDone();
 }
 
@@ -186,8 +199,9 @@ function processLogFields(requiredLogFieldsArr, callItWhenYouAreDone) {
     // 5 - Response size in bytes
     // 6 - Referrer absolute URL
     // 7 - User Agent
-    // 8 - Virtualhost / domain of the URL
-    // 9 - Timetaken for this response in seconds
+    // 8 - Not used for anything
+    // 9 - Virtualhost / domain of the URL
+    // 10 - Timetaken for this response in seconds
 
     // DATA MAP
     // DOMAIN -> URL -> DATE -> GET|POST -> RequestTime & ResponseCode & SizeInBytes & ResponseSeconds
@@ -207,7 +221,7 @@ function processLogFields(requiredLogFieldsArr, callItWhenYouAreDone) {
         domainDataObj[requestArr[1]] = urlDataObj;
     }
 
-      // Request Method
+    // Request Method
     var requestTypeDataArr = urlDataObj[requestArr[0]];
     if(!requestTypeDataArr) {
         requestTypeDataArr = {};
@@ -228,8 +242,87 @@ function processLogFields(requiredLogFieldsArr, callItWhenYouAreDone) {
     dataArr.push(requiredLogFieldsArr[10]);
     dateWiseDetails.push(dataArr);
     callItWhenYouAreDone();
+
 }
 
+function abstractDomainData(requiredLogFieldsArr, callItWhenYouAreDone) {
+    // Expected value in requiredLogFieldsArr index
+    // 0 - line # of the log line in log file
+    // 1 - Date DD/MON/YYYY format
+    // 2 - Time HH:MM:SS format
+    // 3 - Request method, URL, HTTPversion (Ex: GET /any/relative/url.html HTTP/1.1)
+    // 4 - HTTP Response code
+    // 5 - Response size in bytes
+    // 6 - Referrer absolute URL
+    // 7 - User Agent
+    // 8 - Not used for anything
+    // 9 - Virtualhost / domain of the URL
+    // 10 - Timetaken for this response in seconds
+
+    // Data structre of allDomainAbstractDataObj
+    // {Domain : {Date : {HH\:MM: [MinResponseTime, MaxResponseTime, TotalResponseTimeForAverage, TotalRequests] } }}
+    //Get or Create domain object
+    var domainDataObj = allDomainAbstractDataObj[requiredLogFieldsArr[9]];
+    if(!domainDataObj) {
+        domainDataObj = {};
+        allDomainAbstractDataObj[requiredLogFieldsArr[9]] = domainDataObj;
+    }
+
+    // Request Date
+    var dateWiseDetailsObj = domainDataObj[requiredLogFieldsArr[1]];
+    if(!dateWiseDetailsObj) {
+        dateWiseDetailsObj = {};
+        domainDataObj[requiredLogFieldsArr[1]] = dateWiseDetailsObj;
+    }
+
+    // Time HH:MM
+    var hhMM = requiredLogFieldsArr[2].substring(0,5);
+    var hhMMDetailsArr = dateWiseDetailsObj[hhMM];
+    if(!hhMMDetailsArr) {
+        hhMMDetailsArr = [];
+        hhMMDetailsArr[0] = 0;
+        hhMMDetailsArr[1] = 0;
+        hhMMDetailsArr[2] = 0;
+        hhMMDetailsArr[3] = 0;
+        dateWiseDetailsObj[hhMM] = hhMMDetailsArr;
+    }
+
+    var minResponseTime = hhMMDetailsArr[0];
+    var maxResponseTime = hhMMDetailsArr[1];
+    var totalResponseTime = hhMMDetailsArr[2];
+    var totalRequests = hhMMDetailsArr[3];
+
+    if(parseInt(minResponseTime) > parseInt(requiredLogFieldsArr[10])) {
+        hhMMDetailsArr[0] = requiredLogFieldsArr[10];
+    }
+    if(parseInt(maxResponseTime) < parseInt(requiredLogFieldsArr[10])) {
+        hhMMDetailsArr[1] = requiredLogFieldsArr[10];
+    }
+
+    hhMMDetailsArr[2] = parseInt(hhMMDetailsArr[2]) + parseInt(requiredLogFieldsArr[10]);
+    hhMMDetailsArr[3] = parseInt(hhMMDetailsArr[3]) + 1;
+
+    callItWhenYouAreDone();
+}
+
+function persistAbstractDomainDataAsDelimitedRecord(delimiter, webAccessLogFolderPath, logFileName) {
+    var fileDesriptor = fs.openSync(webAccessLogFolderPath+'/AbstractAccessitReport-'+logFileName+'.csv', 'a');
+    var domainKeys = Object.keys(allDomainAbstractDataObj);
+    for(var i in domainKeys) {
+        var domainDataObj = allDomainAbstractDataObj[domainKeys[i]];
+        var dateKeys = Object.keys(domainDataObj);
+        for(var j in dateKeys) {
+            fs.writeSync(fileDesriptor, dateKeys[j]+"\n");
+            var hhMMDataObj = domainDataObj[dateKeys[j]];
+            var hhMMKeys = Object.keys(hhMMDataObj);
+            for(var k in hhMMKeys) {
+                var hhMMDetailsArr = hhMMDataObj[hhMMKeys[k]];
+                fs.writeSync(fileDesriptor, hhMMKeys[k]+delimiter+hhMMDetailsArr[0]+delimiter+hhMMDetailsArr[1]+delimiter+(parseInt(hhMMDetailsArr[2])/parseInt(hhMMDetailsArr[3]))+delimiter+hhMMDetailsArr[3]+"\n")
+            }
+        }
+    }
+    fs.closeSync(fileDesriptor);
+}
 
 
 // function splitWebAccessLog returns an array of logFields; array index order details:
@@ -256,11 +349,11 @@ function splitWebAccessLog(logLineNr, logStr, callItWhenYouAreDone) {
     fetchWebAccessLogFields(logLineNr, logFieldsArr, callItWhenYouAreDone);
 }
 
-function readWebAccessLog(webAccessLogFilePath) {
-    console.log("[INFO] Processing file "+webAccessLogFilePath);
+function readWebAccessLog(webAccessLogFolderPath, fileName) {
+    console.log("[INFO] Processing file "+webAccessLogFolderPath+"/"+fileName);
     var lineNr = 1;
-
-    var fileStream = fs.createReadStream(webAccessLogFilePath, {autoClose: true})
+    var time = Date.now();
+    var fileStream = fs.createReadStream(webAccessLogFolderPath+"/"+fileName, {autoClose: true})
         .pipe(eventStream.split())
         .pipe(eventStream.mapSync(function(line) {
             // pause the readstream
@@ -284,12 +377,20 @@ function readWebAccessLog(webAccessLogFilePath) {
         })
         .on('end', function(){
             if(generatePerformanceReport) {
-                fs.writeFile('accessit.txt', JSON.stringify(allDomainDataObj), function(err) {
-                    if(err) console.log(err);
-                    else console.log("Stored processed data to file accessit.txt");
-                });
+                if(!generateAbstractPerformanceReport) {
+                    fs.writeFile(webAccessLogFolderPath+'/DetailedAccessitReport-'+fileName+'.txt', JSON.stringify(allDomainDataObj), function(err) {
+                        if(err) console.log(err);
+                        else console.log("Stored processed data to "+webAccessLogFolderPath+'/DetailedAccessitReport-'+fileName+'.txt');
+                    });
+                } else {
+                    persistAbstractDomainDataAsDelimitedRecord(",", webAccessLogFolderPath, fileName);
+                    fs.writeFile(webAccessLogFolderPath+'/AbstractAccessitReport-'+fileName+'.txt', JSON.stringify(allDomainAbstractDataObj), function(err) {
+                        if(err) console.log(err);
+                        else console.log("Stored processed data to "+webAccessLogFolderPath+'/AbstractAccessitReport-'+fileName+'.txt');
+                    });
+                }
             }
-            console.log('Read entirefile.')
+            console.log('[INFO] Finished processing log file in '+((Date.now()-time)/1000)+'secs')
             if(generateLoadFromAccessLog)
                 simulateAccessLog();
         })
@@ -315,7 +416,7 @@ function readWebAccessLogFolder(webAccessLogFolderPath) {
                 }
             }
             if(!ignore)
-                readWebAccessLog(webAccessLogFolderPath+"/"+files[i]);
+                readWebAccessLog(webAccessLogFolderPath, files[i]);
             else
                 ignore = false;
         }
