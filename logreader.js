@@ -10,13 +10,20 @@
 //#####################
 // Folder & File path tested only with absolute path. Relative path may work!
 // On windows machine use unix style (/) folder separator
-var logFolderPath = "C:/Users/kalypand/eBT/eBP/Logs/webalizer/ToProcess/JustADay"; //"C:/Users/kalypand/eBT/eBP/hititlogs"; //To analyze all the files with in the given folder. No trailing slash.
+var logFolderPath = "C:/Users/kalypand/eBT/eBP/Logs/webalizer/ToProcess/JustADay"; 
+//"C:/Users/kalypand/eBT/eBP/hititlogs"; //To analyze all the files with in the given folder. No trailing slash.
 var logFilePath = ""; //To analyze just one file; if this value is present logFolderPath is ignored
 //#####################
 
 //#####################
 // Leave it empty to simulate all domains with in access logs
 var domainsToProcess = ['www.aig.com'];
+//#####################
+
+//#####################
+var generateAbstractPerformanceReportForURl = true;
+// Skip http:// and https:// as part of the URL
+var urlsToProcess = ['www.aig.com/home_3171_411330.html'];
 //#####################
 
 /////////////////////// DO NOT MODIFY ANYTHING BELOW /////////////////////////////
@@ -34,7 +41,7 @@ var generateAbstractPerformanceReport = true;
 var generateLoadFromAccessLog = false;
 
 var urlsToIgnore = ['/'];
-var fileExtensionsToIgnore = ['gz', 'tar', 'txt', 'csv']; //This applies only to files within logFolderPath
+var fileExtensionsToIgnore = ['gz', 'tar', 'txt', 'csv', 'xlsx']; //This applies only to files within logFolderPath
 var urlExtensionsToSimulate = ['.html', '.pdf'];
 var simulateRequestMethods = ['GET', 'HEAD'];
 
@@ -136,7 +143,7 @@ function simulateThisLog(logFieldsArr, callMeToContinue) {
             }
         } else {
             callMeToContinue();
-            console.log('Skipped URL '+request[1]+' with method '+request[0]);
+            console.log('[DEBU] Skipped URL '+request[1]+' with method '+request[0]);
         }
     } catch(err) {
         console.log("[ERRO] @ log line # "+i+". "+err);
@@ -259,8 +266,17 @@ function abstractDomainData(requiredLogFieldsArr, callItWhenYouAreDone) {
     // 9 - Virtualhost / domain of the URL
     // 10 - Timetaken for this response in seconds
 
+    var requestArr = requiredLogFieldsArr[3].split(" ");
+
+    if(generateAbstractPerformanceReportForURl) {
+        if(urlsToProcess.indexOf(requiredLogFieldsArr[9]+requestArr[1])<0) {
+           callItWhenYouAreDone();    
+            return;
+        }
+    }
+    
     // Data structre of allDomainAbstractDataObj
-    // {Domain : {Date : {HH\:MM: [MinResponseTime, MaxResponseTime, TotalResponseTimeForAverage, TotalRequests] } }}
+    // {Domain : {Date : {HH\:MM: [[MinResponseTime, MaxResponseTime, TotalResponseTimeForAverage, TotalRequests]] } }}
     //Get or Create domain object
     var domainDataObj = allDomainAbstractDataObj[requiredLogFieldsArr[9]];
     if(!domainDataObj) {
@@ -313,11 +329,19 @@ function persistAbstractDomainDataAsDelimitedRecord(delimiter, webAccessLogFolde
         var dateKeys = Object.keys(domainDataObj);
         for(var j in dateKeys) {
             fs.writeSync(fileDesriptor, dateKeys[j]+"\n");
+            fs.writeSync(fileDesriptor, "Time[EST]"+delimiter+"MaxResponseTime"+delimiter+"TotalRequest\n");
+            //fs.writeSync(fileDesriptor, "Max. Response Time\tTotal Request\n");
             var hhMMDataObj = domainDataObj[dateKeys[j]];
             var hhMMKeys = Object.keys(hhMMDataObj);
             for(var k in hhMMKeys) {
                 var hhMMDetailsArr = hhMMDataObj[hhMMKeys[k]];
-                fs.writeSync(fileDesriptor, hhMMKeys[k]+delimiter+hhMMDetailsArr[0]+delimiter+hhMMDetailsArr[1]+delimiter+(parseInt(hhMMDetailsArr[2])/parseInt(hhMMDetailsArr[3]))+delimiter+hhMMDetailsArr[3]+"\n")
+                //fs.writeSync(fileDesriptor, hhMMKeys[k]+delimiter+hhMMDetailsArr[0]+delimiter+hhMMDetailsArr[1]+delimiter+(parseInt(hhMMDetailsArr[2])/parseInt(hhMMDetailsArr[3]))+delimiter+hhMMDetailsArr[3]+"\n");
+                
+                // Only Time MaxResponseTime TotalRequest
+                fs.writeSync(fileDesriptor, hhMMKeys[k]+delimiter+hhMMDetailsArr[1]+delimiter+hhMMDetailsArr[3]+"\n")
+                
+                // Only MaxResponseTime TotalRequest
+                //fs.writeSync(fileDesriptor, hhMMDetailsArr[1]+delimiter+hhMMDetailsArr[3]+"\n")
             }
         }
     }
@@ -373,20 +397,20 @@ function readWebAccessLog(webAccessLogFolderPath, fileName) {
             }
         })
         .on('error', function(){
-            console.log('Error while reading file.');
+            console.log('[ERRO] Error while reading file.');
         })
         .on('end', function(){
             if(generatePerformanceReport) {
                 if(!generateAbstractPerformanceReport) {
                     fs.writeFile(webAccessLogFolderPath+'/DetailedAccessitReport-'+fileName+'.txt', JSON.stringify(allDomainDataObj), function(err) {
                         if(err) console.log(err);
-                        else console.log("Stored processed data to "+webAccessLogFolderPath+'/DetailedAccessitReport-'+fileName+'.txt');
+                        else console.log("[INFO] Stored processed data to "+webAccessLogFolderPath+'/DetailedAccessitReport-'+fileName+'.txt');
                     });
                 } else {
                     persistAbstractDomainDataAsDelimitedRecord(",", webAccessLogFolderPath, fileName);
                     fs.writeFile(webAccessLogFolderPath+'/AbstractAccessitReport-'+fileName+'.txt', JSON.stringify(allDomainAbstractDataObj), function(err) {
                         if(err) console.log(err);
-                        else console.log("Stored processed data to "+webAccessLogFolderPath+'/AbstractAccessitReport-'+fileName+'.txt');
+                        else console.log("[INFO] Stored processed data to "+webAccessLogFolderPath+'/AbstractAccessitReport-'+fileName+'.txt');
                     });
                 }
             }
